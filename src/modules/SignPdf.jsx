@@ -3,11 +3,9 @@ import Dropzone from '../components/Dropzone';
 import { saveAs } from 'file-saver';
 import { PDFDocument } from 'pdf-lib';
 import * as pdfjsLib from 'pdfjs-dist';
-import { Loader2, Download, ArrowLeft, ArrowRight, X } from 'lucide-react';
-
+import { Loader2, Download, ArrowLeft, ArrowRight, X, Plus, Trash2, GripVertical, Copy } from 'lucide-react';
 const SignPdf = () => {
     const [pdfFile, setPdfFile] = useState(null);
-    const [sigFile, setSigFile] = useState(null);
     const [pdfDoc, setPdfDoc] = useState(null);
     const [numPages, setNumPages] = useState(0);
     const [currPage, setCurrPage] = useState(1);
@@ -15,12 +13,12 @@ const SignPdf = () => {
     // Canvas & Interaction
     const canvasRef = useRef(null);
     const [pageViewport, setPageViewport] = useState(null);
-    const [sigPosition, setSigPosition] = useState({ x: 100, y: 100 });
-    const [sigSize, setSigSize] = useState(150);
-    const [sigImage, setSigImage] = useState(null); // Image Object (Original or Processed)
+
+    // Multiple Signatures state
+    const [signatures, setSignatures] = useState([]); // Array of { id, image, x, y, size, aspect, page }
+    const [selectedSigId, setSelectedSigId] = useState(null);
     const [isDragging, setIsDragging] = useState(false);
     const [dragOffset, setDragOffset] = useState({ x: 0, y: 0 });
-    const [removeBg, setRemoveBg] = useState(false);
 
     const [processing, setProcessing] = useState(false);
 
@@ -39,57 +37,94 @@ const SignPdf = () => {
         }
     }, [pdfFile]);
 
-    // Process Signature (Remove BG)
-    useEffect(() => {
-        if (!sigFile) return;
+    // Handle new signature upload
+    const onDropSig = async (files) => {
+        const file = files[0];
+        if (!file) return;
 
-        const processSig = async () => {
-            const img = new Image();
-            img.src = URL.createObjectURL(sigFile);
-            await img.decode();
+        const img = new Image();
+        img.src = URL.createObjectURL(file);
+        await img.decode();
 
-            if (!removeBg) {
-                setSigImage(img);
-                return;
-            }
+        const aspect = img.height / img.width;
 
-            // Remove White Background via Canvas
-            const canvas = document.createElement('canvas');
-            canvas.width = img.width;
-            canvas.height = img.height;
-            const ctx = canvas.getContext('2d');
-            ctx.drawImage(img, 0, 0);
-
-            const imgData = ctx.getImageData(0, 0, canvas.width, canvas.height);
-            const data = imgData.data;
-
-            for (let i = 0; i < data.length; i += 4) {
-                const r = data[i];
-                const g = data[i + 1];
-                const b = data[i + 2];
-                // If white (or close to white)
-                if (r > 230 && g > 230 && b > 230) {
-                    data[i + 3] = 0; // Alpha = 0
-                }
-            }
-            ctx.putImageData(imgData, 0, 0);
-
-            const newImg = new Image();
-            newImg.src = canvas.toDataURL('image/png');
-            setSigImage(newImg);
+        const newSig = {
+            id: crypto.randomUUID(),
+            image: img,
+            x: 50,
+            y: 50,
+            size: 150,
+            aspect: aspect,
+            page: currPage,
+            name: file.name
         };
-        processSig();
 
-    }, [sigFile, removeBg]);
+        setSignatures([...signatures, newSig]);
+        setSelectedSigId(newSig.id);
+    };
 
+    const processRemoveBg = async (sigId) => {
+        const sig = signatures.find(s => s.id === sigId);
+        if (!sig) return;
 
-    // Render Page & Draw Signature
+        const img = sig.image;
+        const canvas = document.createElement('canvas');
+        canvas.width = img.width;
+        canvas.height = img.height;
+        const ctx = canvas.getContext('2d');
+        ctx.drawImage(img, 0, 0);
+
+        const imgData = ctx.getImageData(0, 0, canvas.width, canvas.height);
+        const data = imgData.data;
+
+        for (let i = 0; i < data.length; i += 4) {
+            const r = data[i];
+            const g = data[i + 1];
+            const b = data[i + 2];
+            if (r > 230 && g > 230 && b > 230) {
+                data[i + 3] = 0;
+            }
+        }
+        ctx.putImageData(imgData, 0, 0);
+
+        const newImg = new Image();
+        newImg.src = canvas.toDataURL('image/png');
+        await newImg.decode();
+
+        setSignatures(signatures.map(s => s.id === sigId ? { ...s, image: newImg } : s));
+    };
+
+    const removeSignature = (id) => {
+        setSignatures(signatures.filter(s => s.id !== id));
+        if (selectedSigId === id) setSelectedSigId(null);
+    };
+
+    const updateSignature = (id, updates) => {
+        setSignatures(signatures.map(s => s.id === id ? { ...s, ...updates } : s));
+    };
+
+    const duplicateSignature = (id) => {
+        const sig = signatures.find(s => s.id === id);
+        if (!sig) return;
+
+        const newSig = {
+            ...sig,
+            id: crypto.randomUUID(),
+            x: sig.x + 20,
+            y: sig.y + 20,
+        };
+
+        setSignatures([...signatures, newSig]);
+        setSelectedSigId(newSig.id);
+    };
+
+    // Render Page & Draw Signatures
     useEffect(() => {
         const render = async () => {
             if (!pdfDoc || !canvasRef.current) return;
 
             const page = await pdfDoc.getPage(currPage);
-            const viewport = page.getViewport({ scale: 1.0 });
+            const viewport = page.getViewport({ scale: 1.5 }); // Increased scale for better quality
             setPageViewport(viewport);
 
             const canvas = canvasRef.current;
@@ -100,80 +135,110 @@ const SignPdf = () => {
             // Render PDF Page
             await page.render({ canvasContext: context, viewport }).promise;
 
-            // Render Signature on top
-            if (sigImage) {
-                drawSignature(context);
-            }
+            // Render Signatures on this page
+            const pageSigs = signatures.filter(s => s.page === currPage);
+            pageSigs.forEach(sig => {
+                drawSignature(context, sig);
+            });
         };
         render();
-    }, [pdfDoc, currPage, sigImage, sigPosition, sigSize]);
+    }, [pdfDoc, currPage, signatures, selectedSigId]);
 
-    const drawSignature = (ctx) => {
-        if (!sigImage) return;
-        const aspect = sigImage.height / sigImage.width;
-        const h = sigSize * aspect;
-        ctx.drawImage(sigImage, sigPosition.x, sigPosition.y, sigSize, h);
+    const drawSignature = (ctx, sig) => {
+        const h = sig.size * sig.aspect;
+        ctx.drawImage(sig.image, sig.x, sig.y, sig.size, h);
 
-        ctx.strokeStyle = '#3b82f6';
-        ctx.lineWidth = 2;
-        ctx.strokeRect(sigPosition.x, sigPosition.y, sigSize, h);
+        if (sig.id === selectedSigId) {
+            ctx.strokeStyle = '#3b82f6';
+            ctx.lineWidth = 2;
+            ctx.setLineDash([5, 5]);
+            ctx.strokeRect(sig.x, sig.y, sig.size, h);
+            ctx.setLineDash([]);
+
+            // Draw resize handle or just highlight
+            ctx.fillStyle = '#3b82f6';
+            ctx.fillRect(sig.x + sig.size - 5, sig.y + h - 5, 10, 10);
+        }
     };
 
     // --- Inputs ---
     const onDropPdf = (files) => { setPdfFile(files[0]); };
-    const onDropSig = (files) => { setSigFile(files[0]); };
 
     // --- Interaction Handlers ---
     const handleMouseDown = (e) => {
-        if (!sigImage) return;
         const rect = canvasRef.current.getBoundingClientRect();
-        const x = e.clientX - rect.left;
-        const y = e.clientY - rect.top;
+        const x = (e.clientX - rect.left) * (canvasRef.current.width / rect.width);
+        const y = (e.clientY - rect.top) * (canvasRef.current.height / rect.height);
 
-        const aspect = sigImage.height / sigImage.width;
-        const h = sigSize * aspect;
+        // Check if clicked on any signature (reverse order to get top-most)
+        const pageSigs = [...signatures].reverse().filter(s => s.page === currPage);
+        const clickedSig = pageSigs.find(sig => {
+            const h = sig.size * sig.aspect;
+            return x >= sig.x && x <= sig.x + sig.size &&
+                y >= sig.y && y <= sig.y + h;
+        });
 
-        if (x >= sigPosition.x && x <= sigPosition.x + sigSize &&
-            y >= sigPosition.y && y <= sigPosition.y + h) {
+        if (clickedSig) {
+            setSelectedSigId(clickedSig.id);
             setIsDragging(true);
-            setDragOffset({ x: x - sigPosition.x, y: y - sigPosition.y });
+            setDragOffset({ x: x - clickedSig.x, y: y - clickedSig.y });
+        } else {
+            setSelectedSigId(null);
         }
     };
 
     const handleMouseMove = (e) => {
-        if (isDragging) {
+        if (isDragging && selectedSigId) {
             const rect = canvasRef.current.getBoundingClientRect();
-            const x = e.clientX - rect.left;
-            const y = e.clientY - rect.top;
-            setSigPosition({ x: x - dragOffset.x, y: y - dragOffset.y });
+            const x = (e.clientX - rect.left) * (canvasRef.current.width / rect.width);
+            const y = (e.clientY - rect.top) * (canvasRef.current.height / rect.height);
+
+            updateSignature(selectedSigId, {
+                x: x - dragOffset.x,
+                y: y - dragOffset.y
+            });
         }
     };
 
     const handleMouseUp = () => { setIsDragging(false); };
 
     const runSave = async () => {
-        if (!pdfFile || !sigImage) return;
+        if (!pdfFile || signatures.length === 0) return;
         setProcessing(true);
         try {
             const buffer = await pdfFile.arrayBuffer();
             const pdfDocLib = await PDFDocument.load(buffer);
+            const pdfPages = pdfDocLib.getPages();
 
-            // Convert current sigImage (src could be 'blob:' or 'data:') to buffer
-            const fetchRes = await fetch(sigImage.src);
-            const sigArrayBuffer = await fetchRes.arrayBuffer();
+            for (const sig of signatures) {
+                const fetchRes = await fetch(sig.image.src);
+                const sigArrayBuffer = await fetchRes.arrayBuffer();
+                const embeddedSig = await pdfDocLib.embedPng(sigArrayBuffer);
 
-            const embeddedSig = await pdfDocLib.embedPng(sigArrayBuffer);
+                const page = pdfPages[sig.page - 1];
+                const { width: pageWidth, height: pageHeight } = page.getSize();
 
-            const page = pdfDocLib.getPages()[currPage - 1];
-            const { width, height } = page.getSize();
+                // Calculate ratios because canvas might have different scale than PDF
+                const canvasW = pageViewport.width;
+                const canvasH = pageViewport.height;
 
-            const aspect = sigImage.height / sigImage.width;
-            const h = sigSize * aspect;
+                const ratioX = pageWidth / canvasW;
+                const ratioY = pageHeight / canvasH;
 
-            const x = sigPosition.x;
-            const y = height - (sigPosition.y + h);
+                const h = sig.size * sig.aspect;
 
-            page.drawImage(embeddedSig, { x, y, width: sigSize, height: h });
+                const finalX = sig.x * ratioX;
+                const finalY = pageHeight - ((sig.y + h) * ratioY);
+                const finalW = sig.size * ratioX;
+                const finalH = h * ratioY;
+
+                page.drawImage(embeddedSig, {
+                    x: finalX,
+                    y: finalY,
+                    width: finalW,
+                    height: finalH
+                });
+            }
 
             const pdfBytes = await pdfDocLib.save();
             saveAs(new Blob([pdfBytes], { type: 'application/pdf' }), `signed_${pdfFile.name}`);
@@ -188,93 +253,205 @@ const SignPdf = () => {
     if (!pdfFile) {
         return (
             <div className="p-8 max-w-3xl mx-auto space-y-8">
-                <h2 className="text-3xl font-bold text-slate-800">Sign PDF</h2>
-                <div className="bg-white p-8 rounded-xl shadow border border-slate-200 text-center">
-                    <h3 className="text-xl font-medium mb-4">Step 1: Upload PDF</h3>
+                <h2 className="text-3xl font-bold text-slate-800 tracking-tight">Sign PDF</h2>
+                <div className="bg-white p-12 rounded-2xl shadow-xl border border-slate-100 text-center">
+                    <div className="w-20 h-20 bg-blue-50 text-blue-600 rounded-full flex items-center justify-center mx-auto mb-6">
+                        <Plus size={40} />
+                    </div>
+                    <h3 className="text-2xl font-semibold mb-2">Upload your PDF</h3>
+                    <p className="text-slate-500 mb-8">Choose the PDF document you want to sign</p>
                     <Dropzone onDrop={onDropPdf} accept={{ 'application/pdf': [] }} multiple={false} />
                 </div>
             </div>
         );
     }
 
+    const selectedSig = signatures.find(s => s.id === selectedSigId);
+
     return (
-        <div className="flex flex-col h-screen p-4 overflow-hidden">
-            <div className="flex items-center justify-between mb-4 px-4">
-                <div>
-                    <h2 className="text-xl font-bold text-slate-800">Sign PDF</h2>
-                    <p className="text-xs text-slate-500">{pdfFile.name}</p>
+        <div className="flex flex-col h-screen bg-slate-50 overflow-hidden">
+            {/* Header */}
+            <div className="bg-white border-b border-slate-200 px-6 py-4 flex items-center justify-between z-10">
+                <div className="flex items-center space-x-3">
+                    <div className="bg-blue-600 p-2 rounded-lg text-white">
+                        <Download size={20} />
+                    </div>
+                    <div>
+                        <h2 className="text-lg font-bold text-slate-900 leading-tight">Sign PDF</h2>
+                        <p className="text-xs text-slate-500 font-medium truncate max-w-[200px]">{pdfFile.name}</p>
+                    </div>
                 </div>
-                <div className="flex items-center space-x-4">
-                    <button onClick={() => setPdfFile(null)} className="text-sm text-red-500 hover:underline">Change PDF</button>
+                <div className="flex items-center space-x-3">
+                    <button
+                        onClick={() => setPdfFile(null)}
+                        className="text-sm font-semibold text-slate-600 hover:text-red-600 transition-colors px-3 py-2 rounded-lg hover:bg-red-50"
+                    >
+                        Change PDF
+                    </button>
                     <button
                         onClick={runSave}
-                        disabled={!sigFile || processing}
-                        className="bg-blue-600 hover:bg-blue-700 disabled:bg-slate-300 text-white px-6 py-2 rounded-lg font-medium flex items-center"
+                        disabled={signatures.length === 0 || processing}
+                        className="bg-blue-600 hover:bg-blue-700 disabled:bg-slate-300 text-white px-6 py-2.5 rounded-xl font-bold flex items-center transition-all shadow-lg shadow-blue-200 active:scale-95"
                     >
-                        {processing ? <Loader2 className="animate-spin mr-2" /> : <Download className="mr-2" />}
+                        {processing ? <Loader2 className="animate-spin mr-2" size={18} /> : <Download className="mr-2" size={18} />}
                         Save Signed PDF
                     </button>
                 </div>
             </div>
 
-            <div className="flex-1 flex overflow-hidden gap-4">
-                <div className="w-80 bg-white rounded-xl shadow border border-slate-200 p-4 flex flex-col overflow-y-auto">
-                    <div className="mb-6">
-                        <h3 className="font-medium text-slate-700 mb-2">Step 2: Signature</h3>
-                        {!sigFile ? (
-                            <Dropzone onDrop={onDropSig} accept={{ 'image/*': [] }} multiple={false} className="h-32 p-4 min-h-0" />
-                        ) : (
-                            <div className="space-y-4">
-                                <div className="relative group border border-slate-200 rounded p-2 text-center bg-slate-50">
-                                    <img src={sigImage?.src} className="h-16 mx-auto object-contain" alt="Sig" />
-                                    <button onClick={() => { setSigFile(null); setSigImage(null); }} className="absolute top-1 right-1 bg-red-100 text-red-500 p-1 rounded-full opacity-0 group-hover:opacity-100"><X size={12} /></button>
+            <div className="flex-1 flex overflow-hidden">
+                {/* Sidebar */}
+                <div className="w-80 bg-white border-r border-slate-200 flex flex-col h-full shadow-sm">
+                    <div className="p-4 border-b border-slate-100">
+                        <h3 className="text-sm font-bold text-slate-400 uppercase tracking-wider mb-4">Add Signature</h3>
+                        <Dropzone
+                            onDrop={onDropSig}
+                            accept={{ 'image/*': [] }}
+                            multiple={false}
+                            className="h-24 p-3 min-h-0 border-dashed border-2 bg-slate-50 hover:bg-blue-50 transition-colors"
+                            content={
+                                <div className="flex flex-col items-center">
+                                    <Plus size={20} className="text-blue-500 mb-1" />
+                                    <span className="text-xs font-semibold text-slate-500">Upload Image</span>
                                 </div>
+                            }
+                        />
+                    </div>
 
-                                <label className="flex items-center space-x-2 cursor-pointer select-none">
-                                    <input
-                                        type="checkbox"
-                                        checked={removeBg}
-                                        onChange={(e) => setRemoveBg(e.target.checked)}
-                                        className="w-4 h-4 text-blue-600"
-                                    />
-                                    <span className="text-sm text-slate-700">Remove White Background</span>
-                                </label>
+                    <div className="flex-1 overflow-y-auto p-4 space-y-4">
+                        <div className="flex items-center justify-between">
+                            <h3 className="text-sm font-bold text-slate-400 uppercase tracking-wider">Applied Signatures</h3>
+                            <span className="bg-slate-100 text-slate-600 px-2 py-0.5 rounded-full text-[10px] font-bold">{signatures.length}</span>
+                        </div>
+
+                        {signatures.length === 0 ? (
+                            <div className="text-center py-10">
+                                <p className="text-sm text-slate-400 italic">No signatures added yet</p>
+                            </div>
+                        ) : (
+                            <div className="space-y-3">
+                                {signatures.map((sig) => (
+                                    <div
+                                        key={sig.id}
+                                        onClick={() => { setSelectedSigId(sig.id); setCurrPage(sig.page); }}
+                                        className={`group relative p-3 rounded-xl border-2 transition-all cursor-pointer ${selectedSigId === sig.id
+                                            ? 'border-blue-500 bg-blue-50'
+                                            : 'border-slate-100 bg-white hover:border-blue-200'
+                                            }`}
+                                    >
+                                        <div className="flex items-center gap-3">
+                                            <div className="w-12 h-12 bg-white rounded-lg border border-slate-200 p-1 flex items-center justify-center shrink-0 shadow-sm">
+                                                <img src={sig.image.src} className="max-h-full max-w-full object-contain" alt="Sig" />
+                                            </div>
+                                            <div className="flex-1 min-w-0">
+                                                <p className="text-xs font-bold text-slate-700 truncate">{sig.name || 'Signature'}</p>
+                                                <p className="text-[10px] text-slate-500 font-medium">Page {sig.page}</p>
+                                            </div>
+                                            <div className="flex flex-col gap-1 items-center">
+                                                <button
+                                                    onClick={(e) => { e.stopPropagation(); duplicateSignature(sig.id); }}
+                                                    className="text-slate-300 hover:text-blue-500 transition-colors p-1"
+                                                    title="Duplicate"
+                                                >
+                                                    <Copy size={14} />
+                                                </button>
+                                                <button
+                                                    onClick={(e) => { e.stopPropagation(); removeSignature(sig.id); }}
+                                                    className="text-slate-300 hover:text-red-500 transition-colors p-1"
+                                                    title="Remove"
+                                                >
+                                                    <Trash2 size={14} />
+                                                </button>
+                                            </div>
+                                        </div>
+                                    </div>
+                                ))}
                             </div>
                         )}
                     </div>
 
-                    {sigFile && (
-                        <div className="space-y-4">
-                            <div>
-                                <label className="text-sm font-medium text-slate-600">Size: {sigSize}px</label>
-                                <input
-                                    type="range" min="50" max="400"
-                                    value={sigSize}
-                                    onChange={(e) => setSigSize(parseInt(e.target.value))}
-                                    className="w-full mt-2"
-                                />
+                    {selectedSig && (
+                        <div className="p-4 border-t border-slate-100 bg-slate-50/50 space-y-4">
+                            <div className="flex items-center justify-between">
+                                <h4 className="text-xs font-bold text-slate-900">Edit Selected</h4>
+                                <button onClick={() => setSelectedSigId(null)} className="text-slate-400 hover:text-slate-600"><X size={14} /></button>
                             </div>
-                            <div className="text-xs text-slate-400 bg-slate-50 p-2 rounded">
-                                Tip: Drag signature on canvas to position it.
+
+                            <div className="space-y-3">
+                                <div>
+                                    <div className="flex justify-between text-[10px] font-bold text-slate-500 mb-1">
+                                        <span>SIZE</span>
+                                        <span>{selectedSig.size}px</span>
+                                    </div>
+                                    <input
+                                        type="range" min="50" max="600"
+                                        value={selectedSig.size}
+                                        onChange={(e) => updateSignature(selectedSigId, { size: parseInt(e.target.value) })}
+                                        className="w-full accent-blue-600"
+                                    />
+                                </div>
+
+                                <div className="grid grid-cols-2 gap-2">
+                                    <button
+                                        onClick={() => processRemoveBg(selectedSigId)}
+                                        className="py-2 bg-white border border-slate-200 rounded-lg text-[10px] font-bold text-slate-700 hover:bg-slate-50 transition-colors flex items-center justify-center gap-2 shadow-sm"
+                                    >
+                                        Remove BG
+                                    </button>
+                                    <button
+                                        onClick={() => duplicateSignature(selectedSigId)}
+                                        className="py-2 bg-white border border-slate-200 rounded-lg text-[10px] font-bold text-blue-600 hover:bg-blue-50 transition-colors flex items-center justify-center gap-2 shadow-sm"
+                                    >
+                                        <Copy size={12} />
+                                        Duplicate
+                                    </button>
+                                </div>
+
+                                <div className="text-[10px] text-blue-600 font-medium bg-blue-50 p-2 rounded-lg border border-blue-100 text-center">
+                                    Dragging on canvas to reposition
+                                </div>
                             </div>
                         </div>
                     )}
                 </div>
 
-                <div className="flex-1 bg-slate-100 rounded-xl border border-slate-200 relative overflow-auto flex justify-center p-8">
-                    <div className="relative shadow-lg">
+                {/* Main Viewport */}
+                <div className="flex-1 relative overflow-auto bg-slate-200 flex flex-col items-center p-8">
+                    <div className="relative shadow-2xl transition-all duration-300 hover:shadow-blue-900/10">
                         <canvas
                             ref={canvasRef}
                             onMouseDown={handleMouseDown}
                             onMouseMove={handleMouseMove}
                             onMouseUp={handleMouseUp}
                             onMouseLeave={handleMouseUp}
-                            className="bg-white cursor-crosshair"
+                            className="bg-white rounded-sm cursor-move shadow-inner"
                         />
-                        <div className="absolute bottom-4 left-1/2 -translate-x-1/2 bg-slate-800/80 text-white px-4 py-2 rounded-full flex items-center space-x-4 text-sm backdrop-blur-sm">
-                            <button onClick={() => setCurrPage(p => Math.max(1, p - 1))} disabled={currPage === 1} className="hover:text-blue-300 disabled:opacity-30"><ArrowLeft size={16} /></button>
-                            <span>Page {currPage} / {numPages}</span>
-                            <button onClick={() => setCurrPage(p => Math.min(numPages, p + 1))} disabled={currPage === numPages} className="hover:text-blue-300 disabled:opacity-30"><ArrowRight size={16} /></button>
+
+                        {/* Page Controls Overlay */}
+                        <div className="absolute bottom-6 left-1/2 -translate-x-1/2 bg-slate-900/90 text-white px-5 py-2.5 rounded-full flex items-center space-x-6 text-sm font-bold backdrop-blur-md shadow-2xl border border-white/10 z-20">
+                            <button
+                                onClick={() => setCurrPage(p => Math.max(1, p - 1))}
+                                disabled={currPage === 1}
+                                className="p-1 hover:text-blue-400 disabled:opacity-30 transition-all active:scale-90"
+                            >
+                                <ArrowLeft size={20} />
+                            </button>
+                            <span className="min-w-[80px] text-center tracking-tighter">PAGE {currPage} / {numPages}</span>
+                            <button
+                                onClick={() => setCurrPage(p => Math.min(numPages, p + 1))}
+                                disabled={currPage === numPages}
+                                className="p-1 hover:text-blue-400 disabled:opacity-30 transition-all active:scale-90"
+                            >
+                                <ArrowRight size={20} />
+                            </button>
+                        </div>
+                    </div>
+
+                    {/* Floating Tips */}
+                    <div className="mt-6 flex gap-4">
+                        <div className="bg-white/50 backdrop-blur-sm px-4 py-2 rounded-lg text-[10px] font-bold text-slate-500 border border-slate-200 uppercase tracking-widest flex items-center gap-2">
+                            <div className="w-2 h-2 rounded-full bg-blue-500 animate-pulse"></div>
+                            Select a signature to edit
                         </div>
                     </div>
                 </div>
