@@ -16,6 +16,7 @@ const SignPdf = () => {
 
     // Multiple Signatures state
     const [signatures, setSignatures] = useState([]); // Array of { id, image, x, y, size, aspect, page }
+    const [signatureLibrary, setSignatureLibrary] = useState([]); // Unique signature images for reuse
     const [selectedSigId, setSelectedSigId] = useState(null);
     const [isDragging, setIsDragging] = useState(false);
     const [dragOffset, setDragOffset] = useState({ x: 0, y: 0 });
@@ -48,18 +49,30 @@ const SignPdf = () => {
 
         const aspect = img.height / img.width;
 
-        const newSig = {
+        const libraryItem = {
             id: crypto.randomUUID(),
             image: img,
-            x: 50,
-            y: 50,
-            size: 150,
             aspect: aspect,
-            page: currPage,
             name: file.name
         };
 
-        setSignatures([...signatures, newSig]);
+        setSignatureLibrary(prev => [...prev, libraryItem]);
+        addFromLibrary(libraryItem);
+    };
+
+    const addFromLibrary = (libItem) => {
+        const newSig = {
+            id: crypto.randomUUID(),
+            image: libItem.image,
+            x: 50,
+            y: 50,
+            size: 150,
+            aspect: libItem.aspect,
+            page: currPage,
+            name: libItem.name
+        };
+
+        setSignatures(prev => [...prev, newSig]);
         setSelectedSigId(newSig.id);
     };
 
@@ -110,11 +123,13 @@ const SignPdf = () => {
         const newSig = {
             ...sig,
             id: crypto.randomUUID(),
-            x: sig.x + 20,
-            y: sig.y + 20,
+            // Position: offset if on same page, otherwise default
+            x: sig.page === currPage ? sig.x + 20 : 50,
+            y: sig.page === currPage ? sig.y + 20 : 50,
+            page: currPage,
         };
 
-        setSignatures([...signatures, newSig]);
+        setSignatures(prev => [...prev, newSig]);
         setSelectedSigId(newSig.id);
     };
 
@@ -317,6 +332,28 @@ const SignPdf = () => {
                             }
                         />
                     </div>
+
+                    {/* Signature Library */}
+                    {signatureLibrary.length > 0 && (
+                        <div className="p-4 border-b border-slate-100 bg-slate-50/30">
+                            <h3 className="text-sm font-bold text-slate-400 uppercase tracking-wider mb-3">Library (Reuse)</h3>
+                            <div className="flex gap-2 overflow-x-auto pb-2 scrollbar-hide">
+                                {signatureLibrary.map(lib => (
+                                    <button
+                                        key={lib.id}
+                                        onClick={() => addFromLibrary(lib)}
+                                        className="w-14 h-14 bg-white border border-slate-200 rounded-lg p-1 hover:border-blue-500 hover:shadow-md transition-all shrink-0 flex items-center justify-center group relative"
+                                        title="Click to add to current page"
+                                    >
+                                        <img src={lib.image.src} className="max-h-full max-w-full object-contain" alt="Lib" />
+                                        <div className="absolute inset-0 bg-blue-600/5 opacity-0 group-hover:opacity-100 flex items-center justify-center rounded-lg">
+                                            <Plus size={16} className="text-blue-600" />
+                                        </div>
+                                    </button>
+                                ))}
+                            </div>
+                        </div>
+                    )}
 
                     <div className="flex-1 overflow-y-auto p-4 space-y-4">
                         <div className="flex items-center justify-between">
