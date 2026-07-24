@@ -1,9 +1,9 @@
-import React, { useState } from 'react';
+import React, { useState, useEffect } from 'react';
 import Dropzone from '../components/Dropzone';
 import { saveAs } from 'file-saver';
 import { PDFDocument } from 'pdf-lib';
 import * as pdfjsLib from 'pdfjs-dist';
-import { Loader2, Download, Trash2, GripVertical, ArrowLeft, ArrowRight, FileText, Image as ImageIcon, Plus, FileDown } from 'lucide-react';
+import { Loader2, Download, Trash2, GripVertical, ArrowLeft, ArrowRight, FileText, Image as ImageIcon, Plus, FileDown, Clipboard } from 'lucide-react';
 
 const OrganizePdf = () => {
     const [pages, setPages] = useState([]);
@@ -13,8 +13,37 @@ const OrganizePdf = () => {
     // Drag and Drop States for Placement Suggestion
     const [draggedIndex, setDraggedIndex] = useState(null);
     const [dragOverIndex, setDragOverIndex] = useState(null);
+    const [downloadMenuIndex, setDownloadMenuIndex] = useState(null);
 
     const addLog = (msg) => setLogs(prev => [...prev, msg]);
+
+    // Global Clipboard Paste Event Listener (CTRL+V) for Organize PDF
+    useEffect(() => {
+        const handlePaste = (e) => {
+            if (!e.clipboardData || !e.clipboardData.items) return;
+            const items = e.clipboardData.items;
+            const pastedFiles = [];
+
+            for (let i = 0; i < items.length; i++) {
+                const item = items[i];
+                if (item.type.indexOf('image') !== -1) {
+                    const blob = item.getAsFile();
+                    if (blob) {
+                        const ext = item.type.split('/')[1] || 'png';
+                        const file = new File([blob], `pasted_image_${Date.now()}_${i + 1}.${ext}`, { type: item.type });
+                        pastedFiles.push(file);
+                    }
+                }
+            }
+
+            if (pastedFiles.length > 0) {
+                handleUploadFiles(pastedFiles);
+            }
+        };
+
+        window.addEventListener('paste', handlePaste);
+        return () => window.removeEventListener('paste', handlePaste);
+    }, []);
 
     // Handle Upload of files (PDF, PNG, JPG, JPEG, WEBP)
     const handleUploadFiles = async (acceptedFiles) => {
@@ -98,39 +127,84 @@ const OrganizePdf = () => {
         return await response.arrayBuffer();
     };
 
-    // Download Single Page as PDF
-    const downloadSinglePage = async (pageItem, index) => {
+    // Download Single Page in chosen format ('pdf' | 'png' | 'jpg')
+    const downloadSinglePage = async (pageItem, index, format = 'pdf') => {
         setProcessing(true);
-        addLog(`Exporting Page ${index + 1}...`);
+        addLog(`Exporting Page ${index + 1} as .${format}...`);
+        const cleanName = pageItem.sourceFileName.substring(0, pageItem.sourceFileName.lastIndexOf('.')) || 'page';
+
         try {
-            const singlePdf = await PDFDocument.create();
+            if (format === 'pdf') {
+                const singlePdf = await PDFDocument.create();
 
-            if (pageItem.isImage) {
-                let imgBuffer = pageItem.fileBuffer;
-                if (!imgBuffer) {
-                    imgBuffer = await urlToArrayBuffer(pageItem.image);
-                }
+                if (pageItem.isImage) {
+                    let imgBuffer = pageItem.fileBuffer;
+                    if (!imgBuffer) {
+                        imgBuffer = await urlToArrayBuffer(pageItem.image);
+                    }
 
-                let embeddedImg;
-                if (pageItem.fileType === 'image/jpeg' || pageItem.fileType === 'image/jpg') {
-                    embeddedImg = await singlePdf.embedJpg(imgBuffer);
+                    let embeddedImg;
+                    if (pageItem.fileType === 'image/jpeg' || pageItem.fileType === 'image/jpg') {
+                        embeddedImg = await singlePdf.embedJpg(imgBuffer);
+                    } else {
+                        embeddedImg = await singlePdf.embedPng(imgBuffer);
+                    }
+
+                    const page = singlePdf.addPage([embeddedImg.width, embeddedImg.height]);
+                    page.drawImage(embeddedImg, { x: 0, y: 0, width: embeddedImg.width, height: embeddedImg.height });
                 } else {
-                    embeddedImg = await singlePdf.embedPng(imgBuffer);
+                    const srcDoc = await PDFDocument.load(pageItem.fileBuffer);
+                    const [copiedPage] = await singlePdf.copyPages(srcDoc, [pageItem.originalIndex]);
+                    singlePdf.addPage(copiedPage);
                 }
 
-                const page = singlePdf.addPage([embeddedImg.width, embeddedImg.height]);
-                page.drawImage(embeddedImg, { x: 0, y: 0, width: embeddedImg.width, height: embeddedImg.height });
+                const pdfBytes = await singlePdf.save();
+                const blob = new Blob([pdfBytes], { type: 'application/pdf' });
+                saveAs(blob, `${cleanName}_page_${index + 1}.pdf`);
+                addLog(`Downloaded Page ${index + 1} as .pdf!`);
             } else {
-                const srcDoc = await PDFDocument.load(pageItem.fileBuffer);
-                const [copiedPage] = await singlePdf.copyPages(srcDoc, [pageItem.originalIndex]);
-                singlePdf.addPage(copiedPage);
-            }
+                // Export as PNG or JPG
+                let imageSrc = pageItem.image;
 
-            const pdfBytes = await singlePdf.save();
-            const blob = new Blob([pdfBytes], { type: 'application/pdf' });
-            const cleanName = pageItem.sourceFileName.substring(0, pageItem.sourceFileName.lastIndexOf('.')) || 'page';
-            saveAs(blob, `${cleanName}_page_${index + 1}.pdf`);
-            addLog(`Downloaded Page ${index + 1} successfully!`);
+                // High resolution render if it's a PDF page
+                if (!pageItem.isImage && pageItem.fileBuffer) {
+                    const loadingTask = pdfjsLib.getDocument({ data: pageItem.fileBuffer.slice(0) });
+                    const pdfProxy = await loadingTask.promise;
+                    const pdfPage = await pdfProxy.getPage(pageItem.originalIndex + 1);
+                    const viewport = pdfPage.getViewport({ scale: 2.0 });
+                    const canvas = document.createElement('canvas');
+                    canvas.width = viewport.width;
+                    canvas.height = viewport.height;
+                    const ctx = canvas.getContext('2d');
+                    await pdfPage.render({ canvasContext: ctx, viewport }).promise;
+                    imageSrc = canvas.toDataURL('image/png');
+                }
+
+                const img = new Image();
+                img.src = imageSrc;
+                await new Promise((resolve) => { img.onload = resolve; });
+
+                const canvas = document.createElement('canvas');
+                canvas.width = img.width;
+                canvas.height = img.height;
+                const ctx = canvas.getContext('2d');
+
+                if (format === 'jpg' || format === 'jpeg') {
+                    ctx.fillStyle = '#ffffff';
+                    ctx.fillRect(0, 0, canvas.width, canvas.height);
+                }
+                ctx.drawImage(img, 0, 0);
+
+                const mimeType = (format === 'jpg' || format === 'jpeg') ? 'image/jpeg' : 'image/png';
+                canvas.toBlob((blob) => {
+                    if (blob) {
+                        saveAs(blob, `${cleanName}_page_${index + 1}.${format}`);
+                        addLog(`Downloaded Page ${index + 1} as .${format}!`);
+                    } else {
+                        addLog(`Failed to export Page ${index + 1} as .${format}`);
+                    }
+                }, mimeType, 0.92);
+            }
         } catch (e) {
             console.error(e);
             addLog(`Error exporting single page: ${e.message}`);
@@ -264,7 +338,7 @@ const OrganizePdf = () => {
                 {/* Main Workspace: Dropzone & Pages Grid */}
                 <div className="lg:col-span-2 space-y-6">
                     {/* Add / Upload Dropzone */}
-                    <div className="bg-white rounded-xl shadow-sm border border-slate-200 p-4">
+                    <div className="bg-white rounded-xl shadow-sm border border-slate-200 p-4 space-y-2">
                         <Dropzone
                             onDrop={handleUploadFiles}
                             accept={{
@@ -275,6 +349,10 @@ const OrganizePdf = () => {
                             }}
                             multiple={true}
                         />
+                        <div className="flex items-center justify-center gap-1.5 text-xs text-slate-500 bg-blue-50/60 border border-blue-100 rounded-lg p-2.5">
+                            <Clipboard size={14} className="text-blue-600 shrink-0" />
+                            <span>Gunakan <kbd className="px-1.5 py-0.5 bg-white text-slate-800 font-semibold font-mono border border-slate-300 rounded shadow-xs text-[11px]">CTRL + V</kbd> untuk menempelkan (paste) gambar langsung dari clipboard!</span>
+                        </div>
                     </div>
 
                     {/* Pages Grid with Drag Placement Indicator */}
@@ -333,15 +411,74 @@ const OrganizePdf = () => {
                                                 </div>
 
                                                 <div className="flex items-center space-x-1">
-                                                    {/* Download Single Page Button */}
-                                                    <button
-                                                        onClick={() => downloadSinglePage(page, i)}
-                                                        disabled={processing}
-                                                        className="p-1 text-slate-500 hover:text-blue-600 hover:bg-blue-50 rounded transition-colors"
-                                                        title="Download page ini saja"
-                                                    >
-                                                        <FileDown size={15} />
-                                                    </button>
+                                                    {/* Download Single Page Button & Dropdown */}
+                                                    <div className="relative">
+                                                        <button
+                                                            onClick={(e) => {
+                                                                e.stopPropagation();
+                                                                setDownloadMenuIndex(downloadMenuIndex === i ? null : i);
+                                                            }}
+                                                            disabled={processing}
+                                                            className={`p-1 rounded transition-colors ${
+                                                                downloadMenuIndex === i
+                                                                    ? 'text-blue-600 bg-blue-100 font-bold'
+                                                                    : 'text-slate-500 hover:text-blue-600 hover:bg-blue-50'
+                                                            }`}
+                                                            title="Download page ini (pilih format)"
+                                                        >
+                                                            <FileDown size={15} />
+                                                        </button>
+
+                                                        {downloadMenuIndex === i && (
+                                                            <>
+                                                                <div
+                                                                    className="fixed inset-0 z-30"
+                                                                    onClick={(e) => {
+                                                                        e.stopPropagation();
+                                                                        setDownloadMenuIndex(null);
+                                                                    }}
+                                                                />
+                                                                <div className="absolute right-0 top-full mt-1 w-32 bg-white rounded-lg shadow-xl border border-slate-200 py-1 z-40 text-xs font-medium text-slate-700 space-y-0.5 animate-in fade-in zoom-in-95 duration-100">
+                                                                    <div className="px-2.5 py-1 text-[10px] text-slate-400 font-bold uppercase border-b border-slate-100">
+                                                                        Format Download:
+                                                                    </div>
+                                                                    <button
+                                                                        onClick={(e) => {
+                                                                            e.stopPropagation();
+                                                                            setDownloadMenuIndex(null);
+                                                                            downloadSinglePage(page, i, 'pdf');
+                                                                        }}
+                                                                        className="w-full text-left px-3 py-1.5 hover:bg-blue-50 hover:text-blue-600 flex items-center justify-between transition-colors"
+                                                                    >
+                                                                        <span className="font-semibold text-slate-800 hover:text-blue-600">.PDF</span>
+                                                                        <span className="text-[10px] text-slate-400">Document</span>
+                                                                    </button>
+                                                                    <button
+                                                                        onClick={(e) => {
+                                                                            e.stopPropagation();
+                                                                            setDownloadMenuIndex(null);
+                                                                            downloadSinglePage(page, i, 'png');
+                                                                        }}
+                                                                        className="w-full text-left px-3 py-1.5 hover:bg-blue-50 hover:text-blue-600 flex items-center justify-between transition-colors"
+                                                                    >
+                                                                        <span className="font-semibold text-slate-800 hover:text-blue-600">.PNG</span>
+                                                                        <span className="text-[10px] text-slate-400">Gambar</span>
+                                                                    </button>
+                                                                    <button
+                                                                        onClick={(e) => {
+                                                                            e.stopPropagation();
+                                                                            setDownloadMenuIndex(null);
+                                                                            downloadSinglePage(page, i, 'jpg');
+                                                                        }}
+                                                                        className="w-full text-left px-3 py-1.5 hover:bg-blue-50 hover:text-blue-600 flex items-center justify-between transition-colors"
+                                                                    >
+                                                                        <span className="font-semibold text-slate-800 hover:text-blue-600">.JPG</span>
+                                                                        <span className="text-[10px] text-slate-400">Gambar</span>
+                                                                    </button>
+                                                                </div>
+                                                            </>
+                                                        )}
+                                                    </div>
 
                                                     {/* Delete Page Button */}
                                                     <button
