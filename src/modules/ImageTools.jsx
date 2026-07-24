@@ -2,7 +2,7 @@ import React, { useState, useEffect, useRef } from 'react';
 import Dropzone from '../components/Dropzone';
 import { saveAs } from 'file-saver';
 import heic2any from 'heic2any';
-import { Loader2, Download, Trash2, ArrowUp, ArrowDown, MoveHorizontal, MoveVertical, Eye, Layers } from 'lucide-react';
+import { Loader2, Download, Trash2, ArrowUp, ArrowDown, MoveHorizontal, MoveVertical, Eye, Layers, Clipboard } from 'lucide-react';
 
 const ImageTools = () => {
     const [mode, setMode] = useState('convert'); // 'convert' | 'resize' | 'merge'
@@ -25,6 +25,35 @@ const ImageTools = () => {
     const [generatingPreview, setGeneratingPreview] = useState(false);
 
     const addLog = (msg) => setLogs(prev => [...prev, msg]);
+
+    // Global Clipboard Paste Event Listener (CTRL+V)
+    useEffect(() => {
+        const handlePaste = (e) => {
+            if (!e.clipboardData || !e.clipboardData.items) return;
+            const items = e.clipboardData.items;
+            const pastedFiles = [];
+
+            for (let i = 0; i < items.length; i++) {
+                const item = items[i];
+                if (item.type.indexOf('image') !== -1) {
+                    const blob = item.getAsFile();
+                    if (blob) {
+                        const ext = item.type.split('/')[1] || 'png';
+                        const file = new File([blob], `pasted_image_${Date.now()}_${i + 1}.${ext}`, { type: item.type });
+                        pastedFiles.push(file);
+                    }
+                }
+            }
+
+            if (pastedFiles.length > 0) {
+                setFiles(prev => [...prev, ...pastedFiles]);
+                addLog(`Pasted ${pastedFiles.length} image(s) from clipboard (CTRL+V).`);
+            }
+        };
+
+        window.addEventListener('paste', handlePaste);
+        return () => window.removeEventListener('paste', handlePaste);
+    }, []);
 
     const formatBytes = (bytes) => {
         if (!bytes || bytes === 0) return '0 B';
@@ -359,7 +388,13 @@ const ImageTools = () => {
             <div className="grid grid-cols-1 lg:grid-cols-3 gap-8">
                 {/* Left Column: Dropzone & File List & Live Preview */}
                 <div className="lg:col-span-2 space-y-6">
-                    <Dropzone onDrop={onDrop} accept={{ 'image/*': [] }} />
+                    <div className="space-y-2">
+                        <Dropzone onDrop={onDrop} accept={{ 'image/*': [] }} />
+                        <div className="flex items-center justify-center gap-1.5 text-xs text-slate-500 bg-blue-50/60 border border-blue-100 rounded-lg p-2.5">
+                            <Clipboard size={14} className="text-blue-600 shrink-0" />
+                            <span>Use <kbd className="px-1.5 py-0.5 bg-white text-slate-800 font-semibold font-mono border border-slate-300 rounded shadow-xs text-[11px]">CTRL + V</kbd> to paste an image directly from your clipboard!</span>
+                        </div>
+                    </div>
 
                     {files.length > 0 && (
                         <div className="bg-white rounded-xl shadow-sm border border-slate-200 overflow-hidden">

@@ -35,7 +35,7 @@ const Sidebar = ({ activeTab, setActiveTab }) => {
             </nav>
 
             <div className="text-center py-4 border-t border-slate-800 text-xs text-slate-500">
-                © 2026 Unified Tools
+                © 2026 Unified Tools by Alldone03
             </div>
         </div>
     );
